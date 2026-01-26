@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Denicx CRM</title>
+    <link rel="icon" href="/assets/denicx-logo.jpg" />
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="bg-slate-50 text-slate-900">
+    <div class="min-h-screen">
+      <header class="border-b bg-white">
+        <div class="mx-auto max-w-6xl px-4 py-4 flex items-center justify-between">
+          <div>
+            <div class="flex items-center gap-3">
+              <img src="/assets/denicx-logo.jpg" alt="Denicx" class="h-8 w-8 rounded-md object-cover" />
+              <div>
+                <div class="text-lg font-semibold">Denicx CRM</div>
+                <div class="text-xs text-slate-500">Pipeline</div>
+              </div>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <a class="text-sm text-slate-600 hover:text-slate-900" href="/_/" target="_blank" rel="noreferrer">Admin</a>
+            <button id="logoutBtn" class="hidden rounded-md px-3 py-1.5 text-sm font-medium bg-slate-900 text-white hover:bg-slate-800">Logout</button>
+          </div>
+        </div>
+      </header>
+
+      <main class="mx-auto max-w-6xl px-4 py-6">
+        <div id="loginPanel" class="max-w-md rounded-xl border bg-white p-4 shadow-sm">
+          <div class="flex items-center gap-3">
+            <img src="/assets/denicx-logo.jpg" alt="Denicx" class="h-9 w-9 rounded-md object-cover" />
+            <div>
+              <div class="font-semibold">Sign in</div>
+              <div class="text-xs text-slate-500">Superuser</div>
+            </div>
+          </div>
+          <div class="text-sm text-slate-600 mt-3">Use your superuser email/password.</div>
+
+          <div class="mt-4 grid gap-3">
+            <label class="grid gap-1">
+              <span class="text-xs font-medium text-slate-600">Email</span>
+              <input id="email" class="rounded-md border px-3 py-2 text-sm" placeholder="admin@example.com" />
+            </label>
+            <label class="grid gap-1">
+              <span class="text-xs font-medium text-slate-600">Password</span>
+              <input id="password" type="password" class="rounded-md border px-3 py-2 text-sm" placeholder="••••••••" />
+            </label>
+            <button id="loginBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-500">Login</button>
+            <div id="loginErr" class="hidden text-sm text-rose-600"></div>
+          </div>
+        </div>
+
+        <div id="app" class="hidden">
+          <div class="flex flex-wrap items-center gap-2">
+            <button id="refreshBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-slate-900 text-white hover:bg-slate-800">Refresh</button>
+            <button id="seedBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-500">Add 25 dummy leads</button>
+            <button id="autopilotBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-amber-500 text-white hover:bg-amber-400">Run agent on 10 leads</button>
+            <div class="ml-auto text-sm text-slate-600" id="status"></div>
+          </div>
+
+          <div class="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-4" id="board"></div>
+        </div>
+      </main>
+    </div>
+
+    <template id="colTpl">
+      <section class="rounded-2xl border bg-white shadow-sm overflow-hidden">
+        <div class="px-4 py-3 flex items-center justify-between" data-colHead>
+          <div class="text-sm font-semibold" data-colTitle></div>
+          <div class="text-xs font-semibold rounded-full px-2 py-0.5" data-colCount></div>
+        </div>
+        <div class="p-3 grid gap-3" data-colBody></div>
+      </section>
+    </template>
+
+    <template id="cardTpl">
+      <div class="rounded-xl border bg-white p-3 shadow-sm" data-card>
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <div class="font-semibold truncate" data-name></div>
+              <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold" data-stageBadge></span>
+            </div>
+            <div class="mt-1 text-xs text-slate-600">
+              <span class="font-medium" data-company></span>
+            </div>
+            <div class="mt-1 text-xs text-slate-500">
+              <span data-email></span>
+              <span class="text-slate-300">|</span>
+              <span data-score></span>
+            </div>
+          </div>
+
+          <div class="flex flex-col items-end gap-2 shrink-0">
+            <button class="rounded-md px-2.5 py-1.5 text-[11px] font-semibold bg-sky-600 text-white hover:bg-sky-500" data-action="runAgent">Agent</button>
+            <div class="flex items-center gap-1">
+              <button class="rounded-md px-2.5 py-1.5 text-[11px] font-semibold bg-emerald-600 text-white hover:bg-emerald-500" data-action="setWon">Won</button>
+              <button class="rounded-md px-2.5 py-1.5 text-[11px] font-semibold bg-rose-600 text-white hover:bg-rose-500" data-action="setLost">Lost</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <script>
+      const API = {
+        auth: '/api/collections/_superusers/auth-with-password',
+        leads: '/api/collections/crm_leads/records',
+        runAgent: (leadId) => `/api/ai-crm/agents/run/${leadId}`,
+        seed: (count) => `/api/ai-crm/seed?count=${count}`,
+      };
+
+      const tokenKey = 'ai_crm_token';
+
+      const el = (id) => document.getElementById(id);
+
+      function setStatus(msg) {
+        el('status').textContent = msg || '';
+      }
+
+      function stageBadge(stage) {
+        const base = 'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold';
+        const map = {
+          new:       { cls: 'bg-slate-100 text-slate-700', label: 'New' },
+          outreached:{ cls: 'bg-sky-100 text-sky-700', label: 'Outreached' },
+          replied:   { cls: 'bg-violet-100 text-violet-700', label: 'Replied' },
+          qualified: { cls: 'bg-amber-100 text-amber-800', label: 'Qualified' },
+          proposal:  { cls: 'bg-indigo-100 text-indigo-700', label: 'Proposal' },
+          won:       { cls: 'bg-emerald-100 text-emerald-800', label: 'Won' },
+          lost:      { cls: 'bg-rose-100 text-rose-800', label: 'Lost' },
+        };
+        const v = map[stage] || { cls: 'bg-slate-100 text-slate-700', label: stage || '—' };
+        return { className: `${base} ${v.cls}`, text: v.label };
+      }
+
+      function stageColumnStyle(stage) {
+        const map = {
+          new:       { head: 'bg-slate-50', chip: 'bg-slate-200 text-slate-700', title: 'New' },
+          outreached:{ head: 'bg-sky-50', chip: 'bg-sky-200 text-sky-800', title: 'Outreached' },
+          replied:   { head: 'bg-violet-50', chip: 'bg-violet-200 text-violet-800', title: 'Replied' },
+          qualified: { head: 'bg-amber-50', chip: 'bg-amber-200 text-amber-900', title: 'Qualified' },
+          proposal:  { head: 'bg-indigo-50', chip: 'bg-indigo-200 text-indigo-900', title: 'Proposal' },
+          won:       { head: 'bg-emerald-50', chip: 'bg-emerald-200 text-emerald-900', title: 'Won' },
+          lost:      { head: 'bg-rose-50', chip: 'bg-rose-200 text-rose-900', title: 'Lost' },
+        };
+        return map[stage] || { head: 'bg-slate-50', chip: 'bg-slate-200 text-slate-700', title: stage || '—' };
+      }
+
+      async function apiFetch(url, opts = {}) {
+        const token = localStorage.getItem(tokenKey);
+        const headers = new Headers(opts.headers || {});
+        if (token) headers.set('Authorization', token);
+        if (!headers.has('Content-Type') && opts.method && opts.method !== 'GET') {
+          headers.set('Content-Type', 'application/json');
+        }
+        const res = await fetch(url, { ...opts, headers });
+        const text = await res.text();
+        let body;
+        try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+        if (!res.ok) {
+          const msg = (body && body.message) ? body.message : `Request failed (${res.status})`;
+          throw new Error(msg);
+        }
+        return body;
+      }
+
+      async function login() {
+        el('loginErr').classList.add('hidden');
+        const identity = el('email').value.trim();
+        const password = el('password').value;
+        try {
+          const res = await apiFetch(API.auth, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ identity, password }),
+          });
+          localStorage.setItem(tokenKey, res.token);
+          mountAuthedUI();
+          await refresh();
+        } catch (e) {
+          el('loginErr').textContent = e.message;
+          el('loginErr').classList.remove('hidden');
+        }
+      }
+
+      function logout() {
+        localStorage.removeItem(tokenKey);
+        location.reload();
+      }
+
+      function mountAuthedUI() {
+        el('loginPanel').classList.add('hidden');
+        el('app').classList.remove('hidden');
+        el('logoutBtn').classList.remove('hidden');
+      }
+
+      async function refresh() {
+        setStatus('Loading…');
+        const res = await apiFetch(`${API.leads}?perPage=50&sort=-updated`);
+        renderBoard(res.items || []);
+        setStatus(`Leads: ${res.items?.length ?? 0}`);
+      }
+
+      function renderBoard(items) {
+        const stages = ['new', 'outreached', 'replied', 'qualified', 'proposal', 'won', 'lost'];
+        const groups = Object.fromEntries(stages.map((s) => [s, []]));
+
+        for (const lead of items) {
+          const st = stages.includes(lead.stage) ? lead.stage : 'new';
+          groups[st].push(lead);
+        }
+
+        const board = el('board');
+        board.innerHTML = '';
+        const colTpl = el('colTpl');
+        const cardTpl = el('cardTpl');
+
+        for (const st of stages) {
+          const style = stageColumnStyle(st);
+          const col = colTpl.content.firstElementChild.cloneNode(true);
+          const head = col.querySelector('[data-colHead]');
+          head.className = `px-4 py-3 flex items-center justify-between ${style.head}`;
+          col.querySelector('[data-colTitle]').textContent = style.title;
+          const cnt = col.querySelector('[data-colCount]');
+          cnt.className = `text-xs font-semibold rounded-full px-2 py-0.5 ${style.chip}`;
+          cnt.textContent = groups[st].length;
+
+          const body = col.querySelector('[data-colBody]');
+          for (const lead of groups[st]) {
+            const card = cardTpl.content.firstElementChild.cloneNode(true);
+            if (lead.stage === 'won') card.classList.add('border-emerald-200');
+            if (lead.stage === 'lost') card.classList.add('border-rose-200');
+
+            card.querySelector('[data-name]').textContent = lead.name || lead.id;
+            card.querySelector('[data-company]').textContent = lead.company || '—';
+            card.querySelector('[data-email]').textContent = lead.email || '—';
+            card.querySelector('[data-score]').textContent = `Score: ${Math.round(lead.score ?? 0)}`;
+
+            const badge = card.querySelector('[data-stageBadge]');
+            const b = stageBadge(lead.stage);
+            badge.className = b.className.replace('text-xs', 'text-[11px]');
+            badge.textContent = b.text;
+
+            card.querySelectorAll('button[data-action]').forEach((btn) => {
+              btn.addEventListener('click', async () => {
+                try {
+                  btn.disabled = true;
+                  if (btn.dataset.action === 'runAgent') {
+                    await apiFetch(API.runAgent(lead.id), { method: 'POST' });
+                  }
+                  if (btn.dataset.action === 'setWon') {
+                    await apiFetch(`${API.leads}/${lead.id}`, { method: 'PATCH', body: JSON.stringify({ stage: 'won' }) });
+                  }
+                  if (btn.dataset.action === 'setLost') {
+                    await apiFetch(`${API.leads}/${lead.id}`, { method: 'PATCH', body: JSON.stringify({ stage: 'lost' }) });
+                  }
+                  await refresh();
+                } catch (e) {
+                  alert(e.message);
+                } finally {
+                  btn.disabled = false;
+                }
+              });
+            });
+
+            body.appendChild(card);
+          }
+
+          board.appendChild(col);
+        }
+      }
+
+      async function seed25() {
+        try {
+          setStatus('Seeding…');
+          await apiFetch(API.seed(25), { method: 'POST' });
+          await refresh();
+        } catch (e) {
+          alert(e.message);
+        } finally {
+          setStatus('');
+        }
+      }
+
+      async function runAgents10() {
+        try {
+          setStatus('Running agents…');
+          const res = await apiFetch(`${API.leads}?perPage=10&sort=-updated&filter=stage!='won' && stage!='lost'`);
+          for (const lead of (res.items || [])) {
+            await apiFetch(API.runAgent(lead.id), { method: 'POST' });
+          }
+          await refresh();
+        } catch (e) {
+          alert(e.message);
+        } finally {
+          setStatus('');
+        }
+      }
+
+      el('loginBtn').addEventListener('click', login);
+      el('logoutBtn').addEventListener('click', logout);
+      el('refreshBtn').addEventListener('click', refresh);
+      el('seedBtn').addEventListener('click', seed25);
+      el('autopilotBtn').addEventListener('click', runAgents10);
+
+      if (localStorage.getItem(tokenKey)) {
+        mountAuthedUI();
+        refresh().catch(() => {});
+      }
+    </script>
+  </body>
+</html>
