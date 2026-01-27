@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log"
 	"math/rand/v2"
-	"os"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -28,7 +28,9 @@ const (
 )
 
 func main() {
-	app := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: resolveDataDir()})
+	dataDir := resolveDataDir()
+	log.Printf("ai_crm starting (dataDir=%s)", dataDir)
+	app := pocketbase.NewWithConfig(pocketbase.Config{DefaultDataDir: dataDir})
 
 	app.OnBootstrap().BindFunc(func(be *core.BootstrapEvent) error {
 		if err := be.Next(); err != nil {
@@ -62,6 +64,12 @@ func main() {
 			return se.Next()
 		},
 	})
+
+	if os.Getenv("VERCEL") != "" {
+		// Prepend the "serve" command when running in Vercel
+		// to ensure the web server starts automatically.
+		os.Args = append([]string{os.Args[0], "serve"}, os.Args[1:]...)
+	}
 
 	if err := app.Start(); err != nil {
 		log.Fatal(err)
@@ -401,13 +409,13 @@ func seedDemoDataWithCollections(app core.App, accounts *core.Collection, leads 
 
 	leadStages := []string{"new", "outreached", "replied", "qualified", "proposal"}
 	dealStagesByLead := map[string]string{
-		"new":       "qualification",
+		"new":        "qualification",
 		"outreached": "qualification",
-		"replied":   "qualification",
-		"qualified": "qualification",
-		"proposal":  "proposal",
-		"won":       "won",
-		"lost":      "lost",
+		"replied":    "qualification",
+		"qualified":  "qualification",
+		"proposal":   "proposal",
+		"won":        "won",
+		"lost":       "lost",
 	}
 
 	for i := 0; i < count; i++ {

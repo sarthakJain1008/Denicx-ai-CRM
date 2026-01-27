@@ -4,5 +4,10 @@
 # exclude from the ignore filter
 !.gitignore
 !main.go
+!go.mod
+!go.sum
 !pb_public/
 !pb_public/**
+!vercel.json
+!build.sh
+.vercel
