@@ -1,16 +1,23 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
@@ -155,6 +162,14 @@ func bindAICRMRoutes(se *core.ServeEvent) {
 
 		return e.JSON(http.StatusOK, result)
 	}).Bind(apis.RequireSuperuserAuth())
+
+	grp.POST("/apify/import", func(e *core.RequestEvent) error {
+		res, err := importApifyDubaiEcommerceCSuite(e.App)
+		if err != nil {
+			return e.InternalServerError("Failed to import from Apify.", err)
+		}
+		return e.JSON(http.StatusOK, res)
+	}).Bind(apis.RequireSuperuserAuth())
 }
 
 func bindAICRMJobs(se *core.ServeEvent) {
@@ -217,10 +232,33 @@ func ensureAccountsCollection(app core.App) (*core.Collection, error) {
 	return col, nil
 }
 
+func ensureLeadsFieldsUpgrade(app core.App, col *core.Collection) error {
+	changed := false
+	if col.Fields.GetByName("job_title") == nil {
+		col.Fields.Add(&core.TextField{Name: "job_title", Max: 255})
+		changed = true
+	}
+	if col.Fields.GetByName("phone") == nil {
+		col.Fields.Add(&core.TextField{Name: "phone", Max: 255})
+		changed = true
+	}
+	if col.Fields.GetByName("linkedin") == nil {
+		col.Fields.Add(&core.TextField{Name: "linkedin", Max: 1024})
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return app.Save(col)
+}
+
 func ensureLeadsCollection(app core.App) (*core.Collection, error) {
 	if col, ok, err := findCollection(app, collectionLeads); err != nil {
 		return nil, err
 	} else if ok {
+		if err := ensureLeadsFieldsUpgrade(app, col); err != nil {
+			return nil, err
+		}
 		return col, nil
 	}
 
@@ -241,6 +279,9 @@ func ensureLeadsCollection(app core.App) (*core.Collection, error) {
 		&core.EmailField{Name: "email"},
 		&core.TextField{Name: "company", Max: 255},
 		&core.RelationField{Name: "account", CollectionId: accounts.Id, MaxSelect: 1},
+		&core.TextField{Name: "job_title", Max: 255},
+		&core.TextField{Name: "phone", Max: 255},
+		&core.TextField{Name: "linkedin", Max: 1024},
 		&core.SelectField{Name: "stage", Required: true, Values: []string{"new", "outreached", "replied", "qualified", "proposal", "won", "lost"}},
 		&core.NumberField{Name: "score", Min: floatPointer(0), Max: floatPointer(100)},
 		&core.DateField{Name: "last_contacted"},
@@ -658,4 +699,354 @@ func safe(s string) string {
 		return "there"
 	}
 	return s
+}
+
+type apifyLeadCandidate struct {
+	FullName        string
+	Email           string
+	JobTitle        string
+	Linkedin        string
+	Phone           string
+	CompanyName     string
+	CompanyWebsite  string
+	CompanyLinkedin string
+}
+
+func importApifyDubaiEcommerceCSuite(app core.App) (map[string]any, error) {
+	token := strings.TrimSpace(os.Getenv("APIFY_TOKEN"))
+	if token == "" {
+		return nil, errors.New("missing APIFY_TOKEN")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 330*time.Second)
+	defer cancel()
+
+	endpoint := "https://api.apify.com/v2/acts/compass~crawler-google-places/run-sync-get-dataset-items"
+	q := url.Values{}
+	q.Set("token", token)
+	q.Set("view", "leadsEnrichment")
+	q.Set("clean", "true")
+	apiURL := endpoint + "?" + q.Encode()
+
+	input := map[string]any{
+		"searchStringsArray":            []string{"e-commerce"},
+		"locationQuery":                 "Dubai, United Arab Emirates",
+		"countryCode":                   "AE",
+		"language":                      "en",
+		"maxCrawledPlacesPerSearch":     10,
+		"maximumLeadsEnrichmentRecords": 3,
+		"leadsEnrichmentDepartments":    []string{"c_suite"},
+		"scrapeContacts":                false,
+		"scrapePlaceDetailPage":         false,
+	}
+
+	payload, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 330 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("apify request failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	items, err := parseApifyItems(body)
+	if err != nil {
+		return nil, err
+	}
+
+	candidates := make([]apifyLeadCandidate, 0, len(items))
+	for _, item := range items {
+		candidates = append(candidates, extractApifyCandidates(item)...)
+	}
+
+	seen := map[string]struct{}{}
+	deduped := make([]apifyLeadCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		k := ""
+		if strings.TrimSpace(c.Email) != "" {
+			k = "email:" + strings.ToLower(strings.TrimSpace(c.Email))
+		} else {
+			k = "name_company:" + strings.ToLower(strings.TrimSpace(c.FullName)) + "|" + strings.ToLower(strings.TrimSpace(c.CompanyName))
+		}
+		if k == "name_company:|" {
+			continue
+		}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		deduped = append(deduped, c)
+	}
+
+	createdLeads := 0
+	updatedLeads := 0
+	skipped := 0
+
+	for _, c := range deduped {
+		if strings.TrimSpace(c.FullName) == "" || strings.TrimSpace(c.CompanyName) == "" {
+			skipped++
+			continue
+		}
+
+		acc, _, err := upsertAccountByName(app, c.CompanyName, c.CompanyWebsite)
+		if err != nil {
+			return nil, err
+		}
+
+		lead, created, err := upsertLead(app, acc.Id, c)
+		if err != nil {
+			return nil, err
+		}
+		_ = lead
+		if created {
+			createdLeads++
+		} else {
+			updatedLeads++
+		}
+	}
+
+	return map[string]any{
+		"createdLeads": createdLeads,
+		"updatedLeads": updatedLeads,
+		"skipped":      skipped,
+		"total":        len(deduped),
+	}, nil
+}
+
+func parseApifyItems(body []byte) ([]map[string]any, error) {
+	var arr []map[string]any
+	if err := json.Unmarshal(body, &arr); err == nil {
+		return arr, nil
+	}
+	var wrapper struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(body, &wrapper); err != nil {
+		return nil, err
+	}
+	return wrapper.Items, nil
+}
+
+func extractApifyCandidates(item map[string]any) []apifyLeadCandidate {
+	if item == nil {
+		return nil
+	}
+
+	if getString(item, "fullName") != "" || getString(item, "personId") != "" {
+		return []apifyLeadCandidate{normalizeApifyLead(item)}
+	}
+
+	byIdx := map[int]map[string]any{}
+	for k, v := range item {
+		if strings.HasPrefix(k, "csuiteProfile_") {
+			m, ok := byIdx[0]
+			if !ok {
+				m = map[string]any{}
+				byIdx[0] = m
+			}
+			m[strings.TrimPrefix(k, "csuiteProfile_")] = v
+			continue
+		}
+		if strings.HasPrefix(k, "csuiteProfile/") {
+			rest := strings.TrimPrefix(k, "csuiteProfile/")
+			parts := strings.SplitN(rest, "/", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			idx, convErr := strconv.Atoi(parts[0])
+			if convErr != nil {
+				continue
+			}
+			m, ok := byIdx[idx]
+			if !ok {
+				m = map[string]any{}
+				byIdx[idx] = m
+			}
+			m[parts[1]] = v
+		}
+	}
+
+	if len(byIdx) == 0 {
+		return nil
+	}
+
+	idxs := make([]int, 0, len(byIdx))
+	for idx := range byIdx {
+		idxs = append(idxs, idx)
+	}
+	sort.Ints(idxs)
+
+	out := make([]apifyLeadCandidate, 0, len(idxs))
+	for _, idx := range idxs {
+		m := byIdx[idx]
+		if m == nil {
+			continue
+		}
+		out = append(out, normalizeApifyLead(m))
+	}
+	return out
+}
+
+func normalizeApifyLead(m map[string]any) apifyLeadCandidate {
+	return apifyLeadCandidate{
+		FullName:        firstNonEmpty(getString(m, "fullName"), strings.TrimSpace(getString(m, "firstName")+" "+getString(m, "lastName"))),
+		Email:           getString(m, "email"),
+		JobTitle:        firstNonEmpty(getString(m, "jobTitle"), getString(m, "headline")),
+		Linkedin:        getString(m, "linkedinProfile"),
+		Phone:           firstNonEmpty(getString(m, "mobileNumber"), getString(m, "phone")),
+		CompanyName:     firstNonEmpty(getString(m, "companyName"), getString(m, "csuiteProfile_companyName")),
+		CompanyWebsite:  getString(m, "companyWebsite"),
+		CompanyLinkedin: getString(m, "companyLinkedin"),
+	}
+}
+
+func upsertAccountByName(app core.App, companyName string, companyWebsite string) (*core.Record, bool, error) {
+	companyName = strings.TrimSpace(companyName)
+	if companyName == "" {
+		return nil, false, errors.New("missing company name")
+	}
+
+	acc, err := app.FindFirstRecordByFilter(collectionAccounts, "name={:name}", dbx.Params{"name": companyName})
+	if err == nil {
+		return acc, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, false, err
+	}
+
+	accounts, err := app.FindCollectionByNameOrId(collectionAccounts)
+	if err != nil {
+		return nil, false, err
+	}
+
+	rec := core.NewRecord(accounts)
+	rec.Set("name", companyName)
+	if domain := domainFromWebsite(companyWebsite); domain != "" {
+		rec.Set("domain", domain)
+	}
+	if err := app.Save(rec); err != nil {
+		return nil, false, err
+	}
+	return rec, true, nil
+}
+
+func upsertLead(app core.App, accountId string, c apifyLeadCandidate) (*core.Record, bool, error) {
+	leads, err := app.FindCollectionByNameOrId(collectionLeads)
+	if err != nil {
+		return nil, false, err
+	}
+
+	var lead *core.Record
+	created := false
+
+	if strings.TrimSpace(c.Email) != "" {
+		lead, err = app.FindFirstRecordByFilter(collectionLeads, "email={:email}", dbx.Params{"email": strings.TrimSpace(c.Email)})
+	} else {
+		lead, err = app.FindFirstRecordByFilter(collectionLeads, "name={:name} && company={:company}", dbx.Params{"name": strings.TrimSpace(c.FullName), "company": strings.TrimSpace(c.CompanyName)})
+	}
+
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, false, err
+		}
+		lead = core.NewRecord(leads)
+		created = true
+		lead.Set("stage", "new")
+		lead.Set("score", 0)
+	}
+
+	lead.Set("name", strings.TrimSpace(c.FullName))
+	if strings.TrimSpace(c.Email) != "" {
+		lead.Set("email", strings.TrimSpace(c.Email))
+	}
+	lead.Set("company", strings.TrimSpace(c.CompanyName))
+	lead.Set("account", accountId)
+	if strings.TrimSpace(c.JobTitle) != "" {
+		lead.Set("job_title", strings.TrimSpace(c.JobTitle))
+	}
+	if strings.TrimSpace(c.Phone) != "" {
+		lead.Set("phone", strings.TrimSpace(c.Phone))
+	}
+	if strings.TrimSpace(c.Linkedin) != "" {
+		lead.Set("linkedin", strings.TrimSpace(c.Linkedin))
+	}
+
+	if err := app.Save(lead); err != nil {
+		return nil, false, err
+	}
+
+	return lead, created, nil
+}
+
+func domainFromWebsite(site string) string {
+	site = strings.TrimSpace(site)
+	if site == "" {
+		return ""
+	}
+	if !strings.Contains(site, "://") {
+		site = "https://" + site
+	}
+	u, err := url.Parse(site)
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	host = strings.TrimPrefix(host, "www.")
+	return host
+}
+
+func getString(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch vv := v.(type) {
+	case string:
+		return strings.TrimSpace(vv)
+	case float64:
+		if vv == float64(int64(vv)) {
+			return strconv.FormatInt(int64(vv), 10)
+		}
+		return strconv.FormatFloat(vv, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(vv)
+	case int64:
+		return strconv.FormatInt(vv, 10)
+	case json.Number:
+		return vv.String()
+	default:
+		b, err := json.Marshal(vv)
+		if err != nil {
+			return ""
+		}
+		return strings.Trim(string(b), "\"")
+	}
+}
+
+func firstNonEmpty(a, b string) string {
+	a = strings.TrimSpace(a)
+	if a != "" {
+		return a
+	}
+	return strings.TrimSpace(b)
 }

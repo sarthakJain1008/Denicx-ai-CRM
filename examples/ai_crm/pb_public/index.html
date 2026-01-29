@@ -57,6 +57,7 @@
             <button id="refreshBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-slate-900 text-white hover:bg-slate-800">Refresh</button>
             <button id="seedBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-500">Add 25 dummy leads</button>
             <button id="autopilotBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-amber-500 text-white hover:bg-amber-400">Run agent on 10 leads</button>
+            <button id="apifyImportBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-500">Import Dubai E-commerce C-Suite (Apify)</button>
             <div class="ml-auto text-sm text-slate-600" id="status"></div>
           </div>
 
@@ -110,6 +111,7 @@
         leads: '/api/collections/crm_leads/records',
         runAgent: (leadId) => `/api/ai-crm/agents/run/${leadId}`,
         seed: (count) => `/api/ai-crm/seed?count=${count}`,
+        apifyImport: '/api/ai-crm/apify/import',
       };
 
       const tokenKey = 'ai_crm_token';
@@ -299,11 +301,28 @@
         }
       }
 
+      async function apifyImport() {
+        const btn = el('apifyImportBtn');
+        try {
+          btn.disabled = true;
+          setStatus('Importing from Apify…');
+          const res = await apiFetch(API.apifyImport, { method: 'POST' });
+          await refresh();
+          alert(`Apify import complete. Created: ${res.createdLeads ?? 0}, Updated: ${res.updatedLeads ?? 0}, Skipped: ${res.skipped ?? 0}`);
+        } catch (e) {
+          alert(e.message);
+        } finally {
+          btn.disabled = false;
+          setStatus('');
+        }
+      }
+
       el('loginBtn').addEventListener('click', login);
       el('logoutBtn').addEventListener('click', logout);
       el('refreshBtn').addEventListener('click', refresh);
       el('seedBtn').addEventListener('click', seed25);
       el('autopilotBtn').addEventListener('click', runAgents10);
+      el('apifyImportBtn').addEventListener('click', apifyImport);
 
       if (localStorage.getItem(tokenKey)) {
         mountAuthedUI();
