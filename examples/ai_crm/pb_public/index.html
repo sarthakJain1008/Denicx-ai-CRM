@@ -58,7 +58,13 @@
             <button id="seedBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-500">Add 25 dummy leads</button>
             <button id="autopilotBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-amber-500 text-white hover:bg-amber-400">Run agent on 10 leads</button>
             <button id="apifyImportBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-500">Import C-Suite</button>
-            <div class="ml-auto text-sm text-slate-600" id="status"></div>
+            <div class="ml-auto flex items-center gap-3">
+              <div class="inline-flex overflow-hidden rounded-md border bg-white">
+                <button id="kanbanViewBtn" class="px-3 py-2 text-sm font-semibold">Kanban</button>
+                <button id="tableViewBtn" class="px-3 py-2 text-sm font-semibold">Table</button>
+              </div>
+              <div class="text-sm text-slate-600" id="status"></div>
+            </div>
           </div>
 
           <div class="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-4" id="board"></div>
@@ -115,11 +121,34 @@
       };
 
       const tokenKey = 'ai_crm_token';
+      const viewKey = 'ai_crm_view';
+      let lastLeads = [];
 
       const el = (id) => document.getElementById(id);
 
       function setStatus(msg) {
         el('status').textContent = msg || '';
+      }
+
+      function getViewMode() {
+        const v = (localStorage.getItem(viewKey) || '').toLowerCase();
+        return v === 'table' ? 'table' : 'kanban';
+      }
+
+      function setViewMode(mode) {
+        localStorage.setItem(viewKey, mode);
+        updateViewButtons();
+        renderCurrentView();
+      }
+
+      function updateViewButtons() {
+        const mode = getViewMode();
+        const kanbanBtn = el('kanbanViewBtn');
+        const tableBtn = el('tableViewBtn');
+        if (!kanbanBtn || !tableBtn) return;
+
+        kanbanBtn.className = `px-3 py-2 text-sm font-semibold ${mode === 'kanban' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'}`;
+        tableBtn.className = `px-3 py-2 text-sm font-semibold ${mode === 'table' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700 hover:bg-slate-50'}`;
       }
 
       function stageBadge(stage) {
@@ -203,11 +232,22 @@
       async function refresh() {
         setStatus('Loading…');
         const res = await apiFetch(`${API.leads}?perPage=50&sort=-updated`);
-        renderBoard(res.items || []);
-        setStatus(`Leads: ${res.items?.length ?? 0}`);
+        lastLeads = res.items || [];
+        renderCurrentView();
+        setStatus(`Leads: ${lastLeads?.length ?? 0}`);
+      }
+
+      function renderCurrentView() {
+        const mode = getViewMode();
+        if (mode === 'table') {
+          renderTable(lastLeads);
+        } else {
+          renderBoard(lastLeads);
+        }
       }
 
       function renderBoard(items) {
+        updateViewButtons();
         const stages = ['new', 'outreached', 'replied', 'qualified', 'proposal', 'won', 'lost'];
         const groups = Object.fromEntries(stages.map((s) => [s, []]));
 
@@ -217,6 +257,7 @@
         }
 
         const board = el('board');
+        board.className = 'mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-4';
         board.innerHTML = '';
         const colTpl = el('colTpl');
         const cardTpl = el('cardTpl');
@@ -276,6 +317,97 @@
         }
       }
 
+      function renderTable(items) {
+        updateViewButtons();
+        const board = el('board');
+        board.className = 'mt-4 overflow-x-auto rounded-xl border bg-white shadow-sm';
+        board.innerHTML = '';
+
+        const table = document.createElement('table');
+        table.className = 'min-w-full text-sm';
+
+        const thead = document.createElement('thead');
+        thead.className = 'bg-slate-50 text-slate-700';
+        thead.innerHTML = `
+          <tr>
+            <th class="px-3 py-2 text-left font-semibold">Name</th>
+            <th class="px-3 py-2 text-left font-semibold">Position</th>
+            <th class="px-3 py-2 text-left font-semibold">Company</th>
+            <th class="px-3 py-2 text-left font-semibold">Email</th>
+            <th class="px-3 py-2 text-left font-semibold">Stage</th>
+            <th class="px-3 py-2 text-left font-semibold">Score</th>
+            <th class="px-3 py-2 text-left font-semibold">Actions</th>
+          </tr>
+        `;
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        tbody.className = 'divide-y divide-slate-100';
+
+        for (const lead of items || []) {
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-slate-50';
+
+          const b = stageBadge(lead.stage);
+          const stageHtml = `<span class="${b.className}">${b.text}</span>`;
+
+          tr.innerHTML = `
+            <td class="px-3 py-2 font-semibold text-slate-900">${escapeHtml(lead.name || lead.id)}</td>
+            <td class="px-3 py-2 text-slate-700">${escapeHtml(lead.job_title || '—')}</td>
+            <td class="px-3 py-2 text-slate-700">${escapeHtml(lead.company || '—')}</td>
+            <td class="px-3 py-2 text-slate-600">${escapeHtml(lead.email || '—')}</td>
+            <td class="px-3 py-2">${stageHtml}</td>
+            <td class="px-3 py-2 text-slate-700">${Math.round(lead.score ?? 0)}</td>
+            <td class="px-3 py-2">
+              <div class="flex items-center gap-2">
+                <button class="rounded-md px-2.5 py-1.5 text-[11px] font-semibold bg-sky-600 text-white hover:bg-sky-500" data-action="runAgent" data-lead-id="${lead.id}">Agent</button>
+                <button class="rounded-md px-2.5 py-1.5 text-[11px] font-semibold bg-emerald-600 text-white hover:bg-emerald-500" data-action="setWon" data-lead-id="${lead.id}">Won</button>
+                <button class="rounded-md px-2.5 py-1.5 text-[11px] font-semibold bg-rose-600 text-white hover:bg-rose-500" data-action="setLost" data-lead-id="${lead.id}">Lost</button>
+              </div>
+            </td>
+          `;
+
+          tbody.appendChild(tr);
+        }
+
+        table.appendChild(tbody);
+        board.appendChild(table);
+
+        board.querySelectorAll('button[data-action]').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            const action = btn.dataset.action;
+            const leadId = btn.dataset.leadId;
+            if (!leadId) return;
+            try {
+              btn.disabled = true;
+              if (action === 'runAgent') {
+                await apiFetch(API.runAgent(leadId), { method: 'POST' });
+              }
+              if (action === 'setWon') {
+                await apiFetch(`${API.leads}/${leadId}`, { method: 'PATCH', body: JSON.stringify({ stage: 'won' }) });
+              }
+              if (action === 'setLost') {
+                await apiFetch(`${API.leads}/${leadId}`, { method: 'PATCH', body: JSON.stringify({ stage: 'lost' }) });
+              }
+              await refresh();
+            } catch (e) {
+              alert(e.message);
+            } finally {
+              btn.disabled = false;
+            }
+          });
+        });
+      }
+
+      function escapeHtml(s) {
+        return String(s ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#039;');
+      }
+
       async function seed25() {
         try {
           setStatus('Seeding…');
@@ -325,9 +457,12 @@
       el('seedBtn').addEventListener('click', seed25);
       el('autopilotBtn').addEventListener('click', runAgents10);
       el('apifyImportBtn').addEventListener('click', apifyImport);
+      el('kanbanViewBtn').addEventListener('click', () => setViewMode('kanban'));
+      el('tableViewBtn').addEventListener('click', () => setViewMode('table'));
 
       if (localStorage.getItem(tokenKey)) {
         mountAuthedUI();
+        updateViewButtons();
         refresh().catch(() => {});
       }
     </script>
