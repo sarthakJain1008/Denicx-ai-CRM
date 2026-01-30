@@ -162,7 +162,9 @@
         let body;
         try { body = text ? JSON.parse(text) : null; } catch { body = text; }
         if (!res.ok) {
-          const msg = (body && body.message) ? body.message : `Request failed (${res.status})`;
+          const msg = (body && body.message)
+            ? body.message
+            : (typeof body === 'string' && body.trim() ? body.trim() : `Request failed (${res.status})`);
           throw new Error(msg);
         }
         return body;

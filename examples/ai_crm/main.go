@@ -72,6 +72,10 @@ func main() {
 		},
 	})
 
+	if len(os.Args) == 1 {
+		os.Args = append(os.Args, "serve")
+	}
+
 	if os.Getenv("VERCEL") != "" {
 		// Prepend the "serve" command when running in Vercel
 		// to ensure the web server starts automatically.
@@ -167,7 +171,9 @@ func bindAICRMRoutes(se *core.ServeEvent) {
 		res, err := importApifyDubaiEcommerceCSuite(e.App)
 		if err != nil {
 			e.App.Logger().Error("Apify import failed", "error", err)
-			return e.String(http.StatusInternalServerError, "Apify import failed: "+err.Error())
+			return e.JSON(http.StatusInternalServerError, map[string]any{
+				"message": "Apify import failed: " + err.Error(),
+			})
 		}
 		return e.JSON(http.StatusOK, res)
 	}).Bind(apis.RequireSuperuserAuth())
