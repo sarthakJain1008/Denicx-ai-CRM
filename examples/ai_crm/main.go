@@ -737,8 +737,8 @@ func importApifyDubaiEcommerceCSuite(app core.App) (map[string]any, error) {
 
 	input := map[string]any{
 		"searchStringsArray":            []string{"e-commerce"},
-		"locationQuery":                 "Dubai, United Arab Emirates",
-		"countryCode":                   "AE",
+		"locationQuery":                 "Dubai",
+		"countryCode":                   "ae",
 		"language":                      "en",
 		"maxCrawledPlacesPerSearch":     10,
 		"maximumLeadsEnrichmentRecords": 3,
