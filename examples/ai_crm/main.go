@@ -167,7 +167,7 @@ func bindAICRMRoutes(se *core.ServeEvent) {
 		res, err := importApifyDubaiEcommerceCSuite(e.App)
 		if err != nil {
 			e.App.Logger().Error("Apify import failed", "error", err)
-			return e.InternalServerError("Failed to import from Apify.", err)
+			return e.String(http.StatusInternalServerError, "Apify import failed: "+err.Error())
 		}
 		return e.JSON(http.StatusOK, res)
 	}).Bind(apis.RequireSuperuserAuth())
