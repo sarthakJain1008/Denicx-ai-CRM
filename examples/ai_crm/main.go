@@ -177,17 +177,113 @@ func bindAICRMRoutes(se *core.ServeEvent) {
 		}
 		return e.JSON(http.StatusOK, res)
 	}).Bind(apis.RequireSuperuserAuth())
+
+	grp.POST("/purge/demo", func(e *core.RequestEvent) error {
+		res, err := purgeDemoLeads(e.App)
+		if err != nil {
+			return e.InternalServerError("Failed to purge demo leads.", err)
+		}
+		return e.JSON(http.StatusOK, res)
+	}).Bind(apis.RequireSuperuserAuth())
 }
 
 func bindAICRMJobs(se *core.ServeEvent) {
-	go func() {
-		_, _ = autoSeedUpTo(se.App, 25)
-	}()
+	if strings.TrimSpace(strings.ToLower(os.Getenv("AI_CRM_AUTO_SEED"))) == "true" {
+		go func() {
+			_, _ = autoSeedUpTo(se.App, 25)
+		}()
+	}
 
 	se.App.Cron().MustAdd("aiCrmAutoPilot", "*/1 * * * *", func() {
 		// fire-and-forget style job; keep it resilient
 		_, _ = runAgentForPendingLeads(se.App, 5)
 	})
+}
+
+func purgeDemoLeads(app core.App) (map[string]any, error) {
+	demoDomains := []string{"example.com", "acme.test", "company.test", "demo.local", "corp.test"}
+	filterParts := make([]string, 0, len(demoDomains))
+	for _, d := range demoDomains {
+		filterParts = append(filterParts, fmt.Sprintf("email ~ '@%s'", strings.ReplaceAll(d, "'", "''")))
+	}
+	filter := "(" + strings.Join(filterParts, " || ") + ")"
+
+	deletedLeads := 0
+	deletedDeals := 0
+	deletedActivities := 0
+	deletedAccounts := 0
+	accountIds := map[string]struct{}{}
+
+	limit := 200
+	for {
+		leads, err := app.FindRecordsByFilter(collectionLeads, filter, "-updated", limit, 0)
+		if err != nil {
+			return nil, err
+		}
+		if len(leads) == 0 {
+			break
+		}
+
+		for _, lead := range leads {
+			accId := lead.GetString("account")
+			if accId != "" {
+				accountIds[accId] = struct{}{}
+			}
+
+			acts, err := app.FindRecordsByFilter(collectionActivities, fmt.Sprintf("lead='%s'", strings.ReplaceAll(lead.Id, "'", "''")), "", 500, 0)
+			if err != nil {
+				return nil, err
+			}
+			for _, a := range acts {
+				if err := app.Delete(a); err != nil {
+					return nil, err
+				}
+				deletedActivities++
+			}
+
+			deals, err := app.FindRecordsByFilter(collectionDeals, fmt.Sprintf("lead='%s'", strings.ReplaceAll(lead.Id, "'", "''")), "", 500, 0)
+			if err != nil {
+				return nil, err
+			}
+			for _, d := range deals {
+				if err := app.Delete(d); err != nil {
+					return nil, err
+				}
+				deletedDeals++
+			}
+
+			if err := app.Delete(lead); err != nil {
+				return nil, err
+			}
+			deletedLeads++
+		}
+
+	}
+
+	for accId := range accountIds {
+		left, err := app.FindRecordsByFilter(collectionLeads, fmt.Sprintf("account='%s'", strings.ReplaceAll(accId, "'", "''")), "", 1, 0)
+		if err != nil {
+			return nil, err
+		}
+		if len(left) > 0 {
+			continue
+		}
+		acc, err := app.FindRecordById(collectionAccounts, accId)
+		if err != nil {
+			continue
+		}
+		if err := app.Delete(acc); err != nil {
+			return nil, err
+		}
+		deletedAccounts++
+	}
+
+	return map[string]any{
+		"deletedLeads":      deletedLeads,
+		"deletedDeals":      deletedDeals,
+		"deletedActivities": deletedActivities,
+		"deletedAccounts":   deletedAccounts,
+	}, nil
 }
 
 func ensureCRMSchema(app core.App) error {

@@ -58,7 +58,20 @@
             <button id="seedBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-emerald-600 text-white hover:bg-emerald-500">Add 25 dummy leads</button>
             <button id="autopilotBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-amber-500 text-white hover:bg-amber-400">Run agent on 10 leads</button>
             <button id="apifyImportBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-indigo-600 text-white hover:bg-indigo-500">Import C-Suite</button>
+            <button id="purgeDemoBtn" class="rounded-md px-3 py-2 text-sm font-semibold bg-rose-600 text-white hover:bg-rose-500">Remove Dummy Leads</button>
             <div class="ml-auto flex items-center gap-3">
+              <div class="relative">
+                <button id="sortBtn" class="rounded-md border bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Sort</button>
+                <div id="sortMenu" class="hidden absolute right-0 mt-2 w-52 rounded-xl border bg-white shadow-lg p-2 z-10">
+                  <div class="px-2 py-1 text-xs font-semibold text-slate-500">Sort by</div>
+                  <button data-sort-by="score" class="w-full text-left rounded-md px-2 py-2 text-sm hover:bg-slate-50">Score</button>
+                  <div id="sortScoreDir" class="hidden mt-1 ml-2 border-l pl-2">
+                    <button data-sort-dir="asc" class="w-full text-left rounded-md px-2 py-1.5 text-sm hover:bg-slate-50">Ascending</button>
+                    <button data-sort-dir="desc" class="w-full text-left rounded-md px-2 py-1.5 text-sm hover:bg-slate-50">Descending</button>
+                  </div>
+                  <button data-sort-by="email" class="w-full text-left rounded-md px-2 py-2 text-sm hover:bg-slate-50">Email</button>
+                </div>
+              </div>
               <div class="inline-flex overflow-hidden rounded-md border bg-white">
                 <button id="kanbanViewBtn" class="px-3 py-2 text-sm font-semibold">Kanban</button>
                 <button id="tableViewBtn" class="px-3 py-2 text-sm font-semibold">Table</button>
@@ -122,6 +135,8 @@
 
       const tokenKey = 'ai_crm_token';
       const viewKey = 'ai_crm_view';
+      const sortByKey = 'ai_crm_sort_by';
+      const sortDirKey = 'ai_crm_sort_dir';
       let lastLeads = [];
 
       const el = (id) => document.getElementById(id);
@@ -133,6 +148,20 @@
       function getViewMode() {
         const v = (localStorage.getItem(viewKey) || '').toLowerCase();
         return v === 'table' ? 'table' : 'kanban';
+      }
+
+      function getSortState() {
+        const by = (localStorage.getItem(sortByKey) || '').toLowerCase();
+        const dir = (localStorage.getItem(sortDirKey) || '').toLowerCase();
+        return {
+          by: by === 'score' || by === 'email' ? by : '',
+          dir: dir === 'asc' || dir === 'desc' ? dir : 'desc',
+        };
+      }
+
+      function setSortState(by, dir) {
+        localStorage.setItem(sortByKey, by);
+        if (dir) localStorage.setItem(sortDirKey, dir);
       }
 
       function setViewMode(mode) {
@@ -232,9 +261,35 @@
       async function refresh() {
         setStatus('Loading…');
         const res = await apiFetch(`${API.leads}?perPage=50&sort=-updated`);
-        lastLeads = res.items || [];
+        lastLeads = applySort(res.items || []);
         renderCurrentView();
         setStatus(`Leads: ${lastLeads?.length ?? 0}`);
+      }
+
+      function applySort(items) {
+        const s = getSortState();
+        const out = [...(items || [])];
+        if (!s.by) return out;
+
+        if (s.by === 'score') {
+          out.sort((a, b) => {
+            const av = Number(a?.score ?? 0);
+            const bv = Number(b?.score ?? 0);
+            return s.dir === 'asc' ? av - bv : bv - av;
+          });
+        }
+
+        if (s.by === 'email') {
+          out.sort((a, b) => {
+            const av = String(a?.email || '').toLowerCase();
+            const bv = String(b?.email || '').toLowerCase();
+            if (av < bv) return s.dir === 'asc' ? -1 : 1;
+            if (av > bv) return s.dir === 'asc' ? 1 : -1;
+            return 0;
+          });
+        }
+
+        return out;
       }
 
       function renderCurrentView() {
@@ -451,14 +506,72 @@
         }
       }
 
+      async function purgeDemo() {
+        const btn = el('purgeDemoBtn');
+        try {
+          if (!confirm('This will delete all demo/dummy leads (example.com, demo.local, etc.). Continue?')) return;
+          btn.disabled = true;
+          setStatus('Removing dummy leads…');
+          const res = await apiFetch('/api/ai-crm/purge/demo', { method: 'POST' });
+          await refresh();
+          alert(`Removed dummy leads. Leads: ${res.deletedLeads ?? 0}, Deals: ${res.deletedDeals ?? 0}, Activities: ${res.deletedActivities ?? 0}, Accounts: ${res.deletedAccounts ?? 0}`);
+        } catch (e) {
+          alert(e.message);
+        } finally {
+          btn.disabled = false;
+          setStatus('');
+        }
+      }
+
+      function toggleSortMenu(open) {
+        const menu = el('sortMenu');
+        if (!menu) return;
+        if (typeof open === 'boolean') {
+          menu.classList.toggle('hidden', !open);
+        } else {
+          menu.classList.toggle('hidden');
+        }
+      }
+
       el('loginBtn').addEventListener('click', login);
       el('logoutBtn').addEventListener('click', logout);
       el('refreshBtn').addEventListener('click', refresh);
       el('seedBtn').addEventListener('click', seed25);
       el('autopilotBtn').addEventListener('click', runAgents10);
       el('apifyImportBtn').addEventListener('click', apifyImport);
+      el('purgeDemoBtn').addEventListener('click', purgeDemo);
       el('kanbanViewBtn').addEventListener('click', () => setViewMode('kanban'));
       el('tableViewBtn').addEventListener('click', () => setViewMode('table'));
+
+      el('sortBtn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleSortMenu();
+        const s = getSortState();
+        el('sortScoreDir').classList.toggle('hidden', s.by !== 'score');
+      });
+
+      el('sortMenu').addEventListener('click', async (e) => {
+        const by = e.target?.dataset?.sortBy;
+        const dir = e.target?.dataset?.sortDir;
+
+        if (by) {
+          setSortState(by, by === 'score' ? (getSortState().dir || 'desc') : 'asc');
+          el('sortScoreDir').classList.toggle('hidden', by !== 'score');
+          if (by !== 'score') {
+            setSortState(by, 'asc');
+            toggleSortMenu(false);
+            await refresh();
+          }
+        }
+
+        if (dir) {
+          setSortState('score', dir);
+          toggleSortMenu(false);
+          await refresh();
+        }
+      });
+
+      document.addEventListener('click', () => toggleSortMenu(false));
 
       if (localStorage.getItem(tokenKey)) {
         mountAuthedUI();
